@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Allwin I Power Systems</title>
+    <!-- Import Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Import Firebase SDKs -->
+    <script type="module">
+        // Import Firebase modules
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            setDoc, 
+            addDoc, 
+            collection, 
+            onSnapshot, 
+            query,
+            Timestamp,
+            writeBatch,
+            where,
+            getDocs,
+            limit
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- App Configuration ---
+        
+        // Use environment variables provided by the platform
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'allwin-ecommerce-demo';
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth, userId, app;
+        let cart = [];
+        let unsubscribeProducts, unsubscribeServices;
+
+        // --- UI Elements ---
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const appContent = document.getElementById('appContent');
+        const mainContent = document.getElementById('mainContent');
+        const cartCount = document.getElementById('cartCount');
+        const cartPanel = document.getElementById('cartPanel');
+        const cartItemsContainer = document.getElementById('cartItemsContainer');
+        const cartTotal = document.getElementById('cartTotal');
+        const homePage = document.getElementById('homePage');
+        const productsPage = document.getElementById('productsPage');
+        const servicesPage = document.getElementById('servicesPage');
+        const checkoutPage = document.getElementById('checkoutPage');
+        const orderSuccessPage = document.getElementById('orderSuccessPage');
+        const productGrid = document.getElementById('productGrid');
+        const serviceGrid = document.getElementById('serviceGrid');
+        const userIdDisplay = document.getElementById('userIdDisplay');
+        const orderSummaryContainer = document.getElementById('orderSummaryContainer');
+
+        // --- Page Navigation ---
+        function showPage(pageId) {
+            // Hide all pages
+            [homePage, productsPage, servicesPage, checkoutPage, orderSuccessPage].forEach(page => {
+                if(page) page.classList.add('hidden');
+            });
+            // Show the target page
+            const pageToShow = document.getElementById(pageId);
+            if (pageToShow) {
+                pageToShow.classList.remove('hidden');
+            }
+            // Close cart on navigation
+            closeCart();
+        }
+
+        window.navigateTo = (pageId) => {
+            showPage(pageId);
+        };
+
+        // --- Cart Logic ---
+        window.toggleCart = () => {
+            cartPanel.classList.toggle('translate-x-full');
+        };
+
+        window.closeCart = () => {
+            cartPanel.classList.add('translate-x-full');
+        };
+
+        window.addToCart = (id, name, price, type) => {
+            const existingItem = cart.find(item => item.id === id);
+            if (existingItem) {
+                existingItem.quantity++;
+            } else {
+                cart.push({ id, name, price: parseFloat(price), type, quantity: 1 });
+            }
+            updateCartUI();
+            toggleCart(); // Open cart when item is added
+        };
+
+        function updateCartUI() {
+            if (!cartItemsContainer || !cartTotal || !cartCount) return;
+
+            cartItemsContainer.innerHTML = '';
+            let total = 0;
+            let count = 0;
+
+            if (cart.length === 0) {
+                cartItemsContainer.innerHTML = '<p class="text-gray-500">Your cart is empty.</p>';
+            } else {
+                cart.forEach(item => {
+                    total += item.price * item.quantity;
+                    count += item.quantity;
+                    const itemEl = document.createElement('div');
+                    itemEl.className = 'flex justify-between items-center py-2 border-b';
+                    itemEl.innerHTML = `
+                        <div>
+                            <p class="font-semibold">${item.name}</p>
+                            <p class="text-sm text-gray-600">$${item.price.toFixed(2)} x ${item.quantity}</p>
+                        </div>
+                        <p class="font-semibold">$${(item.price * item.quantity).toFixed(2)}</p>
+                    `;
+                    cartItemsContainer.appendChild(itemEl);
+                });
+            }
+
+            cartTotal.textContent = `$${total.toFixed(2)}`;
+            cartCount.textContent = count;
+            cartCount.classList.toggle('hidden', count === 0);
+        }
+
+        window.goToCheckout = () => {
+            if (cart.length === 0) {
+                // You could show a proper modal here
+                console.warn("Cart is empty. Cannot proceed to checkout.");
+                return;
+            }
+            
+            // Populate order summary on checkout page
+            if (orderSummaryContainer) {
+                orderSummaryContainer.innerHTML = '';
+                let total = 0;
+                cart.forEach(item => {
+                    total += item.price * item.quantity;
+                    const itemEl = document.createElement('div');
+                    itemEl.className = 'flex justify-between items-center py-2 border-b';
+                    itemEl.innerHTML = `
+                        <div>
+                            <p class="font-semibold">${item.name} <span class="text-gray-500 font-normal">x ${item.quantity}</span></p>
+                        </div>
+                        <p class="font-semibold">$${(item.price * item.quantity).toFixed(2)}</p>
+                    `;
+                    orderSummaryContainer.appendChild(itemEl);
+                });
+                const totalEl = document.createElement('div');
+                totalEl.className = 'flex justify-between items-center pt-4 font-bold text-lg';
+                totalEl.innerHTML = `
+                    <p>Total</p>
+                    <p>$${total.toFixed(2)}</p>
+                `;
+                orderSummaryContainer.appendChild(totalEl);
+            }
+            
+            showPage('checkoutPage');
+        };
+
+        // --- Order Submission ---
+        async function handleOrderSubmit(event) {
+            event.preventDefault();
+            if (!db || !userId) {
+                console.error("Database not initialized or user not authenticated.");
+                return;
+            }
+
+            const customerForm = event.target;
+            const customerInfo = {
+                name: customerForm.name.value,
+                email: customerForm.email.value,
+                phone: customerForm.phone.value,
+                address: customerForm.address.value,
+            };
+
+            const orderTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+
+            const orderData = {
+                userId: userId,
+                items: cart,
+                total: orderTotal,
+                customerInfo: customerInfo,
+                status: "Pending",
+                createdAt: Timestamp.now()
+            };
+
+            try {
+                // Show loading state on button
+                const submitButton = customerForm.querySelector('button[type="submit"]');
+                submitButton.disabled = true;
+                submitButton.textContent = "Placing Order...";
+
+                // Save to user-specific private collection
+                const ordersCollectionPath = `artifacts/${appId}/users/${userId}/orders`;
+                const docRef = await addDoc(collection(db, ordersCollectionPath), orderData);
+                
+                console.log("Order placed successfully with ID: ", docRef.id);
+                
+                // Reset cart
+                cart = [];
+                updateCartUI();
+                customerForm.reset();
+                
+                // Show success page
+                showPage('orderSuccessPage');
+                document.getElementById('newOrderId').textContent = docRef.id;
+
+            } catch (error) {
+                console.error("Error placing order: ", error);
+                alert("There was an error placing your order. Please try again.");
+            } finally {
+                // Reset button state
+                const submitButton = customerForm.querySelector('button[type="submit"]');
+                submitButton.disabled = false;
+                submitButton.textContent = "Place Order";
+            }
+        }
+        
+        // Attach listener to form
+        const checkoutForm = document.getElementById('checkoutForm');
+        if (checkoutForm) {
+            checkoutForm.addEventListener('submit', handleOrderSubmit);
+        }
+
+        // --- Data Fetching ---
+        function fetchProductsAndServices() {
+            if (!db) return;
+
+            const productsCollectionPath = `artifacts/${appId}/public/data/products`;
+            const servicesCollectionPath = `artifacts/${appId}/public/data/services`;
+
+            // Listen for product changes
+            const productsQuery = query(collection(db, productsCollectionPath));
+            unsubscribeProducts = onSnapshot(productsQuery, (snapshot) => {
+                const products = [];
+                snapshot.forEach((doc) => {
+                    products.push({ id: doc.id, ...doc.data() });
+                });
+                renderItems(products, productGrid, 'product');
+            }, (error) => {
+                console.error("Error fetching products: ", error);
+            });
+
+            // Listen for service changes
+            const servicesQuery = query(collection(db, servicesCollectionPath));
+            unsubscribeServices = onSnapshot(servicesQuery, (snapshot) => {
+                const services = [];
+                snapshot.forEach((doc) => {
+                    services.push({ id: doc.id, ...doc.data() });
+                });
+                renderItems(services, serviceGrid, 'service');
+            }, (error) => {
+                console.error("Error fetching services: ", error);
+            });
+        }
+
+        function renderItems(items, gridElement, type) {
+            if (!gridElement) return;
+            gridElement.innerHTML = ''; // Clear existing items
+
+            if (items.length === 0) {
+                gridElement.innerHTML = `<p class="text-gray-500 col-span-full">No ${type}s found.</p>`;
+                return;
+            }
+
+            items.forEach(item => {
+                const itemCard = document.createElement('div');
+                itemCard.className = 'border rounded-lg shadow-lg overflow-hidden bg-white transition-transform duration-300 hover:shadow-xl hover:-translate-y-1';
+                
+                // Use a placeholder image if no imageUrl is provided
+                const imageUrl = item.imageUrl || `https://placehold.co/600x400/003366/FFFFFF?text=${encodeURIComponent(item.name)}`;
+                
+                itemCard.innerHTML = `
+                    <img src="${imageUrl}" alt="${item.name}" class="w-full h-48 object-cover" onerror="this.src='https://placehold.co/600x400/CCCCCC/FFFFFF?text=Image+Not+Found'">
+                    <div class="p-4">
+                        <h3 class="text-xl font-semibold text-gray-800 h-16">${item.name}</h3>
+                        <p class="text-gray-600 mt-2 h-24 overflow-hidden text-ellipsis">${item.description || 'No description available.'}</p>
+                        <div class="mt-4 flex justify-between items-center">
+                            <span class="text-2xl font-bold text-blue-700">$${parseFloat(item.price || 0).toFixed(2)}</span>
+                            <button class="bg-blue-600 text-white px-4 py-2 rounded-md font-semibold hover:bg-blue-700 transition-colors"
+                                    onclick="addToCart('${item.id}', '${item.name.replace(/'/g, "\\'")}', ${item.price || 0}, '${type}')">
+                                Add to Cart
+                            </button>
+                        </div>
+                    </div>
+                `;
+                gridElement.appendChild(itemCard);
+            });
+        }
+        
+        // --- Data Pre-population ---
+        async function prepopulateData() {
+            if (!db) return;
+            
+            const productsCollectionPath = `artifacts/${appId}/public/data/products`;
+            const productsCollectionRef = collection(db, productsCollectionPath);
+            
+            // Check if products already exist
+            const q = query(productsCollectionRef, limit(1));
+            const snapshot = await getDocs(q);
+            
+            if (snapshot.empty) {
+                console.log("No products found. Pre-populating data...");
+                const batch = writeBatch(db);
+                
+                const sampleProducts = [
+                    { name: "1KVA Online UPS", description: "High-performance online UPS for critical applications. Pure sine wave output.", price: 150.00, category: "Online UPS", imageUrl: "https://placehold.co/600x400/003366/FFFFFF?text=Online+UPS" },
+                    { name: "5KVA Servo Stabilizer", description: "Reliable servo stabilizer for voltage correction. Protects sensitive equipment.", price: 250.00, category: "Servo Stabilizers", imageUrl: "https://placehold.co/600x400/003366/FFFFFF?text=Servo+Stabilizer" },
+                    { name: "150Ah Tubular Battery", description: "Long-lasting tubular battery for inverter systems. Low maintenance.", price: 180.00, category: "Battery", imageUrl: "https://placehold.co/600x400/003366/FFFFFF?text=Inverter+Battery" },
+                    { name: "Industrial Control Panel", description: "Custom-built control panel for industrial automation and machinery.", price: 1200.00, category: "Control Panel", imageUrl: "https://placehold.co/600x400/003366/FFFFFF?text=Control+Panel" },
+                    { name: "10A Battery Charger", description: "Smart battery charger with multiple charging modes.", price: 50.00, category: "Battery Charger", imageUrl: "https://placehold.co/600x400/003366/FFFFFF?text=Battery+Charger" },
+                    { name: "800VA Inverter", description: "Efficient square wave inverter for home use.", price: 90.00, category: "Inverter", imageUrl: "https://placehold.co/600x400/003366/FFFFFF?text=Inverter" }
+                ];
+                
+                sampleProducts.forEach(product => {
+                    const docRef = doc(productsCollectionRef); // Auto-generates ID
+                    batch.set(docRef, product);
+                });
+                
+                const servicesCollectionPath = `artifacts/${appId}/public/data/services`;
+                const servicesCollectionRef = collection(db, servicesCollectionPath);
+                
+                const sampleServices = [
+                    { name: "UPS Installation & Service", description: "Professional installation and repair services for all brands of UPS.", price: 75.00, category: "Service" },
+                    { name: "Stabilizer Repair", description: "Expert repair for servo and static stabilizers.", price: 60.00, category: "Service" },
+                    { name: "Electrical Wiring Consultation", description: "Consulting services for industrial and commercial wiring projects.", price: 100.00, category: "Consulting" },
+                    { name: "Annual Maintenance Contract (AMC)", description: "Comprehensive AMC for UPS and stabilizers to ensure zero downtime.", price: 300.00, category: "Service" }
+                ];
+                
+                sampleServices.forEach(service => {
+                    const docRef = doc(servicesCollectionRef); // Auto-generates ID
+                    batch.set(docRef, service);
+                });
+
+                await batch.commit();
+                console.log("Sample data pre-populated.");
+            } else {
+                console.log("Data already exists. Skipping pre-population.");
+            }
+        }
+
+        // --- Initialization ---
+        async function initialize() {
+            if (!firebaseConfig.apiKey) {
+                console.error("Firebase config is missing!");
+                document.getElementById('loadingMessage').textContent = "Error: Firebase configuration is missing. App cannot load.";
+                return;
+            }
+
+            try {
+                // Initialize Firebase
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Set up authentication
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        console.log("User authenticated. User ID:", userId);
+                        userIdDisplay.textContent = `Session ID: ${userId}`;
+                        
+                        // Once authenticated, pre-populate data if needed, then fetch
+                        await prepopulateData();
+                        fetchProductsAndServices();
+                        
+                        // Hide loading and show app
+                        loadingIndicator.classList.add('hidden');
+                        appContent.classList.remove('hidden');
+                        showPage('homePage');
+                    } else {
+                        // No user, sign in
+                        console.log("No user found, attempting sign in...");
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                });
+
+            } catch (error) {
+                console.error("Error initializing Firebase: ", error);
+                document.getElementById('loadingMessage').textContent = "Error initializing application. Please check console.";
+            }
+        }
+
+        // Start the app
+        document.addEventListener('DOMContentLoaded', initialize);
+
+    </script>
+    <style>
+        /* Simple transition for page content */
+        .page {
+            animation: fadeIn 0.5s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        /* Ensure html and body take full height */
+        html, body {
+            height: 100%;
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom scrollbar for cart */
+        #cartItemsContainer::-webkit-scrollbar {
+            width: 6px;
+        }
+        #cartItemsContainer::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        #cartItemsContainer::-webkit-scrollbar-thumb {
+            background: #a8a8a8;
+            border-radius: 10px;
+        }
+        #cartItemsContainer::-webkit-scrollbar-thumb:hover {
+            background: #888;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-900">
+
+    <!-- Loading Indicator -->
+    <div id="loadingIndicator" class="flex items-center justify-center min-h-screen bg-white">
+        <div class="text-center">
+            <svg class="animate-spin h-10 w-10 text-blue-600 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p id="loadingMessage" class="mt-4 text-lg font-semibold text-gray-700">Connecting to Allwin I Power Systems...</p>
+        </div>
+    </div>
+
+    <!-- Main Application Content -->
+    <div id="appContent" class="hidden min-h-screen flex flex-col">
+
+        <!-- Header -->
+        <header class="bg-white shadow-md sticky top-0 z-40">
+            <nav class="container mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center h-16">
+                    <!-- Logo -->
+                    <div class="flex-shrink-0 flex items-center">
+                        <a href="#" onclick="navigateTo('homePage')" class="text-2xl font-bold text-blue-700">
+                           Allwin I Power Systems
+                        </a>
+                    </div>
+                    
+                    <!-- Navigation Links -->
+                    <div class="hidden md:flex md:space-x-8">
+                        <a href="#" onclick="navigateTo('homePage')" class="text-gray-600 hover:text-blue-600 font-medium">Home</a>
+                        <a href="#" onclick="navigateTo('productsPage')" class="text-gray-600 hover:text-blue-600 font-medium">Products</a>
+                        <a href="#" onclick="navigateTo('servicesPage')" class="text-gray-600 hover:text-blue-600 font-medium">Services</a>
+                        <a href="#" onclick="navigateTo('checkoutPage')" class="text-gray-600 hover:text-blue-600 font-medium">Checkout</a>
+                    </div>
+                    
+                    <!-- Cart Icon -->
+                    <div class="flex items-center">
+                        <button onclick="toggleCart()" class="relative p-2 rounded-full text-gray-600 hover:bg-gray-100 hover:text-blue-600">
+                            <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                            </svg>
+                            <span id="cartCount" class="hidden absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">0</span>
+                        </button>
+                    </div>
+                </div>
+            </nav>
+        </header>
+
+        <!-- Main Content Area -->
+        <main id="mainContent" class="flex-grow">
+            <!-- Home Page -->
+            <section id="homePage" class="page">
+                <!-- Hero Section -->
+                <div class="relative bg-blue-700 text-white overflow-hidden">
+                    <div class="container mx-auto px-4 sm:px-6 lg:px-8 py-20 md:py-32 text-center">
+                        <h1 class="text-4xl md:text-6xl font-extrabold leading-tight">Reliable Power Solutions</h1>
+                        <p class="mt-4 text-lg md:text-xl max-w-2xl mx-auto text-blue-100">Manufacturing & Servicing UPS, Stabilizers, Inverters, and more. Your trusted partner in power systems.</p>
+                        <div class="mt-8 flex justify-center space-x-4">
+                            <a href="#" onclick="navigateTo('productsPage')" class="px-8 py-3 bg-white text-blue-700 font-semibold rounded-md shadow-lg hover:bg-gray-100 transition-colors text-lg">Our Products</a>
+                            <a href="#" onclick="navigateTo('servicesPage')" class="px-8 py-3 bg-blue-600 text-white font-semibold rounded-md shadow-lg hover:bg-blue-500 transition-colors text-lg">Our Services</a>
+                        </div>
+                    </div>
+                </div>
+                <!-- Featured Categories -->
+                <div class="py-16 bg-gray-50">
+                    <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+                        <h2 class="text-3xl font-bold text-center text-gray-800 mb-12">What We Offer</h2>
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+                            <!-- Category Card -->
+                            <div class="bg-white p-6 rounded-lg shadow-lg text-center">
+                                <div class="text-blue-600 mb-4">
+                                    <svg class="h-16 w-16 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                                </div>
+                                <h3 class="text-xl font-semibold mb-2">Manufacturing</h3>
+                                <p class="text-gray-600">Top-quality UPS, Stabilizers, Inverters, and Control Panels built to last.</p>
+                            </div>
+                            <!-- Category Card -->
+                            <div class="bg-white p-6 rounded-lg shadow-lg text-center">
+                                <div class="text-blue-600 mb-4">
+                                    <svg class="h-16 w-16 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.096 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                                </div>
+                                <h3 class="text-xl font-semibold mb-2">Expert Services</h3>
+                                <p class="text-gray-600">Reliable repair, maintenance (AMC), and installation for all power systems.</p>
+                            </div>
+                            <!-- Category Card -->
+                            <div class="bg-white p-6 rounded-lg shadow-lg text-center">
+                                <div class="text-blue-600 mb-4">
+                                    <svg class="h-16 w-16 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                </div>
+                                <h3 class="text-xl font-semibold mb-2">Consulting</h3>
+                                <p class="text-gray-600">Professional advice on electrical wiring, load management, and power auditing.</p>
+                            </div>
+                            <!-- Category Card -->
+                            <div class="bg-white p-6 rounded-lg shadow-lg text-center">
+                                <div class="text-blue-600 mb-4">
+                                    <svg class="h-16 w-16 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                </div>
+                                <h3 class="text-xl font-semibold mb-2">24/7 Support</h3>
+                                <p class="text-gray-600">We are here to support your power needs around the clock.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Products Page -->
+            <section id="productsPage" class="page hidden py-16">
+                <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+                    <h2 class="text-3xl font-bold text-center text-gray-800 mb-12">Our Products</h2>
+                    <div id="productGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                        <!-- Product cards will be injected here by JS -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- Services Page -->
+            <section id="servicesPage" class="page hidden py-16">
+                <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+                    <h2 class="text-3xl font-bold text-center text-gray-800 mb-12">Our Services</h2>
+                    <div id="serviceGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                        <!-- Service cards will be injected here by JS -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- Checkout Page -->
+            <section id="checkoutPage" class="page hidden py-16">
+                <div class="container mx-auto px-4 sm:px-6 lg:px-8 max-w-4xl">
+                    <h2 class="text-3xl font-bold text-center text-gray-800 mb-12">Checkout</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-12">
+                        <!-- Customer Info Form -->
+                        <div class="bg-white p-8 rounded-lg shadow-lg">
+                            <h3 class="text-2xl font-semibold mb-6">Your Information</h3>
+                            <form id="checkoutForm" class="space-y-4">
+                                <div>
+                                    <label for="name" class="block text-sm font-medium text-gray-700">Full Name</label>
+                                    <input type="text" id="name" name="name" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                                </div>
+                                <div>
+                                    <label for="email" class="block text-sm font-medium text-gray-700">Email Address</label>
+                                    <input type="email" id="email" name="email" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                                </div>
+                                <div>
+                                    <label for="phone" class="block text-sm font-medium text-gray-700">Phone Number</label>
+                                    <input type="tel" id="phone" name="phone" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                                </div>
+                                <div>
+                                    <label for="address" class="block text-sm font-medium text-gray-700">Shipping Address</label>
+                                    <textarea id="address" name="address" rows="3" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"></textarea>
+                                </div>
+                                <button type="submit" class="w-full bg-blue-600 text-white px-6 py-3 rounded-md font-semibold text-lg hover:bg-blue-700 transition-colors disabled:bg-gray-400">
+                                    Place Order
+                                </button>
+                            </form>
+                        </div>
+                        
+                        <!-- Order Summary -->
+                        <div class="bg-gray-50 p-8 rounded-lg shadow-inner">
+                            <h3 class="text-2xl font-semibold mb-6">Order Summary</h3>
+                            <div id="orderSummaryContainer" class="space-y-4">
+                                <!-- Order items will be injected here by JS -->
+                                <p class="text-gray-500">Your cart is empty.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Order Success Page -->
+            <section id="orderSuccessPage" class="page hidden py-24">
+                <div class="container mx-auto px-4 sm:px-6 lg:px-8 text-center max-w-2xl">
+                    <div class="bg-white p-12 rounded-lg shadow-xl">
+                        <div class="text-green-500 mb-6">
+                            <svg class="h-20 w-20 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                        </div>
+                        <h2 class="text-3xl font-bold text-gray-800 mb-4">Thank You!</h2>
+                        <p class="text-lg text-gray-600 mb-6">Your order has been placed successfully. We will contact you shortly with confirmation and delivery details.</p>
+                        <p class="text-gray-500">Your Order ID is: <strong id="newOrderId" class="text-gray-700"></strong></p>
+                        <div class="mt-10">
+                            <a href="#" onclick="navigateTo('homePage')" class="px-8 py-3 bg-blue-600 text-white font-semibold rounded-md shadow-lg hover:bg-blue-700 transition-colors text-lg">
+                                Back to Home
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+
+        <!-- Footer -->
+        <footer class="bg-gray-800 text-gray-300 mt-auto">
+            <div class="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                <div class="flex flex-col md:flex-row justify-between items-center">
+                    <p>&copy; 2025 Allwin I Power Systems. All rights reserved.</p>
+                    <div class="flex space-x-6 mt-4 md:mt-0">
+                        <a href="#" class="hover:text-white">Contact</a>
+                        <a href="#" class="hover:text-white">Privacy Policy</a>
+                        <a href="#" class="hover:text-white">Terms of Service</a>
+                    </div>
+                </div>
+                <div class="text-center text-xs text-gray-500 mt-6">
+                    <p id="userIdDisplay">Session ID: loading...</p>
+                </div>
+            </div>
+        </footer>
+
+    </div>
+    
+    <!-- Shopping Cart Side Panel -->
+    <div id="cartPanel" class="fixed inset-y-0 right-0 w-full max-w-md bg-white shadow-xl z-50 transform translate-x-full transition-transform duration-300 ease-in-out">
+        <div class="flex flex-col h-full">
+            <!-- Cart Header -->
+            <div class="flex justify-between items-center p-6 border-b">
+                <h2 class="text-2xl font-semibold">Your Cart</h2>
+                <button onclick="closeCart()" class="p-2 rounded-full text-gray-500 hover:bg-gray-100">
+                    <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- Cart Items -->
+            <div id="cartItemsContainer" class="flex-grow p-6 overflow-y-auto">
+                <p class="text-gray-500">Your cart is empty.</p>
+            </div>
+            
+            <!-- Cart Footer -->
+            <div class="p-6 border-t bg-gray-50">
+                <div class="flex justify-between items-center mb-4">
+                    <span class="text-lg font-semibold text-gray-700">Subtotal:</span>
+                    <span id="cartTotal" class="text-2xl font-bold text-gray-900">$0.00</span>
+                </div>
+                <button onclick="goToCheckout()" class="w-full bg-blue-600 text-white px-6 py-3 rounded-md font-semibold text-lg hover:bg-blue-700 transition-colors">
+                    Proceed to Checkout
+                </button>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
