@@ -1,3 +1,4 @@
+    
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,6 +7,8 @@
     <title>Allwin I Power Systems</title>
     <!-- Import Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+    
+    
     <!-- Import Firebase SDKs -->
     <script type="module">
         // Import Firebase modules
@@ -20,377 +23,556 @@
             getFirestore, 
             doc, 
             getDoc, 
-            setDoc, 
             addDoc, 
+            setDoc, 
+            updateDoc, 
+            deleteDoc, 
             collection, 
             onSnapshot, 
             query,
             Timestamp,
             writeBatch,
-            where,
             getDocs,
             limit
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js";
 
         // --- App Configuration ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         
-        // Use environment variables provided by the platform
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'allwin-ecommerce-demo';
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // --- SOLUTION: PASTE YOUR FIREBASE CONFIG HERE ---
+        // You MUST replace these placeholder values with your own project's keys
+        // from the Firebase console (see instructions in chat).
+        const firebaseConfig = {
+            apiKey: "AIzaSyA3j69yAEIAF9z0pHgwHyN2X6gAaoavv34",
+            authDomain: "aips-3dcdd.firebaseapp.com",
+            projectId: "aips-3dcdd",
+            storageBucket: "aips-3dcdd.firebasestorage.app",
+            messagingSenderId: "838365805103",
+            appId: "1:838365805103:web:cf88f7f221b0c67a2064da",
+            measurementId: "G-0PTY7YE3J2"
+        };
+
+        // The original logic to read __firebase_config was removed.
+        // We are now using the hardcoded object above.
 
         let db, auth, userId, app;
         let cart = [];
         let unsubscribeProducts, unsubscribeServices;
 
+        // --- Gemini API Configuration ---
+        const apiKey = ""; // Per instructions, leave empty.
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
         // --- UI Elements ---
-        const loadingIndicator = document.getElementById('loadingIndicator');
-        const appContent = document.getElementById('appContent');
-        const mainContent = document.getElementById('mainContent');
-        const cartCount = document.getElementById('cartCount');
-        const cartPanel = document.getElementById('cartPanel');
-        const cartItemsContainer = document.getElementById('cartItemsContainer');
-        const cartTotal = document.getElementById('cartTotal');
-        const homePage = document.getElementById('homePage');
-        const productsPage = document.getElementById('productsPage');
-        const servicesPage = document.getElementById('servicesPage');
-        const checkoutPage = document.getElementById('checkoutPage');
-        const orderSuccessPage = document.getElementById('orderSuccessPage');
-        const productGrid = document.getElementById('productGrid');
-        const serviceGrid = document.getElementById('serviceGrid');
-        const userIdDisplay = document.getElementById('userIdDisplay');
-        const orderSummaryContainer = document.getElementById('orderSummaryContainer');
+        // Declare variables here, but assign them inside initialize()
+        let loadingIndicator, appContent, mainContent, cartPanel, cartCount,
+            cartItemsContainer, cartTotal, productGrid, serviceGrid,
+            userIdDisplay, orderSummaryContainer, checkoutForm,
+            appModal, appModalMessage, serviceConsultationForm,
+            serviceConsultationInput, serviceConsultationButton,
+            serviceConsultationSpinner, serviceConsultationResult,
+            productFinderModal, productFinderForm, productFinderInput,
+            productFinderButton, productFinderSpinner, productFinderResult;
+
 
         // --- Page Navigation ---
         function showPage(pageId) {
             // Hide all pages
-            [homePage, productsPage, servicesPage, checkoutPage, orderSuccessPage].forEach(page => {
-                if(page) page.classList.add('hidden');
-            });
+            const pages = mainContent.querySelectorAll('.page');
+            pages.forEach(page => page.classList.add('hidden'));
+            
             // Show the target page
-            const pageToShow = document.getElementById(pageId);
-            if (pageToShow) {
-                pageToShow.classList.remove('hidden');
+            const targetPage = document.getElementById(pageId);
+            if (targetPage) {
+                targetPage.classList.remove('hidden');
+                // Scroll to top
+                window.scrollTo(0, 0);
+            } else {
+                console.error(`Page not found: ${pageId}`);
+                document.getElementById('homePage').classList.remove('hidden');
             }
-            // Close cart on navigation
-            closeCart();
         }
-
         window.navigateTo = (pageId) => {
             showPage(pageId);
+        };
+
+        // --- Modal Logic ---
+        window.showModal = (message) => {
+            if (appModal && appModalMessage) {
+                appModalMessage.textContent = message;
+                appModal.classList.remove('hidden');
+            }
+        };
+        window.closeModal = () => {
+            if (appModal) {
+                appModal.classList.add('hidden');
+            }
+        };
+
+        // --- Product Finder Modal Logic ---
+        window.openProductFinder = () => {
+            if (productFinderModal) {
+                productFinderInput.value = '';
+                productFinderResult.innerHTML = '<p class="text-gray-500">Please describe your needs above, and our AI will provide a recommendation here.</p>';
+                productFinderModal.classList.remove('hidden');
+            }
+        };
+        window.closeProductFinder = () => {
+            if (productFinderModal) {
+                productFinderModal.classList.add('hidden');
+            }
         };
 
         // --- Cart Logic ---
         window.toggleCart = () => {
             cartPanel.classList.toggle('translate-x-full');
+            updateCartView();
         };
-
         window.closeCart = () => {
             cartPanel.classList.add('translate-x-full');
         };
 
-        window.addToCart = (id, name, price, type) => {
+        window.addToCart = (id, name, price, type, imageUrl) => {
             const existingItem = cart.find(item => item.id === id);
             if (existingItem) {
                 existingItem.quantity++;
             } else {
-                cart.push({ id, name, price: parseFloat(price), type, quantity: 1 });
+                cart.push({ id, name, price, type, imageUrl, quantity: 1 });
             }
-            updateCartUI();
-            toggleCart(); // Open cart when item is added
+            updateCartView();
+            showModal(`Added "${name}" to cart!`);
         };
 
-        function updateCartUI() {
-            if (!cartItemsContainer || !cartTotal || !cartCount) return;
+        window.removeFromCart = (id) => {
+            cart = cart.filter(item => item.id !== id);
+            updateCartView();
+        };
 
-            cartItemsContainer.innerHTML = '';
-            let total = 0;
-            let count = 0;
+        window.updateQuantity = (id, newQuantity) => {
+            const item = cart.find(item => item.id === id);
+            if (item) {
+                item.quantity = Math.max(0, newQuantity);
+                if (item.quantity === 0) {
+                    removeFromCart(id);
+                }
+            }
+            updateCartView();
+        };
 
+        function updateCartView() {
             if (cart.length === 0) {
                 cartItemsContainer.innerHTML = '<p class="text-gray-500">Your cart is empty.</p>';
+                orderSummaryContainer.innerHTML = '<p class="text-gray-500">Your cart is empty.</p>';
             } else {
-                cart.forEach(item => {
-                    total += item.price * item.quantity;
-                    count += item.quantity;
-                    const itemEl = document.createElement('div');
-                    itemEl.className = 'flex justify-between items-center py-2 border-b';
-                    itemEl.innerHTML = `
-                        <div>
-                            <p class="font-semibold">${item.name}</p>
-                            <p class="text-sm text-gray-600">$${item.price.toFixed(2)} x ${item.quantity}</p>
+                cartItemsContainer.innerHTML = cart.map(item => `
+                    <div classs="flex items-center space-x-4 mb-4">
+                        <img src="${item.imageUrl || 'https://placehold.co/64x64/e2e8f0/94a3b8?text=Item'}" alt="${item.name}" class="w-16 h-16 rounded-md object-cover">
+                        <div class="flex-grow">
+                            <h4 class="font-semibold">${item.name}</h4>
+                            <p class="text-sm text-gray-600">$${item.price.toFixed(2)}</p>
+                            <div class="flex items-center mt-2">
+                                <label for="qty-${item.id}" class="sr-only">Quantity</label>
+                                <input id="qty-${item.id}" type="number" min="0" value="${item.quantity}" onchange="updateQuantity('${item.id}', parseInt(this.value))" class="w-16 px-2 py-1 border rounded-md">
+                            </div>
                         </div>
-                        <p class="font-semibold">$${(item.price * item.quantity).toFixed(2)}</p>
-                    `;
-                    cartItemsContainer.appendChild(itemEl);
-                });
+                        <button onclick="removeFromCart('${item.id}')" class="text-red-500 hover:text-red-700">
+                            <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
+                    </div>
+                `).join('');
+                
+                orderSummaryContainer.innerHTML = cart.map(item => `
+                    <div class="flex justify-between">
+                        <span class="text-gray-600">${item.name} (x${item.quantity})</span>
+                        <span class="font-medium">$${(item.price * item.quantity).toFixed(2)}</span>
+                    </div>
+                `).join('');
             }
-
+            
+            const total = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
             cartTotal.textContent = `$${total.toFixed(2)}`;
-            cartCount.textContent = count;
-            cartCount.classList.toggle('hidden', count === 0);
+            
+            const totalQuantity = cart.reduce((sum, item) => sum + item.quantity, 0);
+            if (totalQuantity > 0) {
+                cartCount.textContent = totalQuantity;
+                cartCount.classList.remove('hidden');
+            } else {
+                cartCount.classList.add('hidden');
+            }
+            
+            // Add total to order summary
+            if (cart.length > 0) {
+                orderSummaryContainer.innerHTML += `
+                    <div class="border-t pt-4 mt-4 flex justify-between">
+                        <span class="text-lg font-semibold">Total:</span>
+                        <span class="text-lg font-bold">$${total.toFixed(2)}</span>
+                    </div>
+                `;
+            }
         }
 
         window.goToCheckout = () => {
             if (cart.length === 0) {
-                // You could show a proper modal here
-                console.warn("Cart is empty. Cannot proceed to checkout.");
+                showModal("Your cart is empty. Please add items before checking out.");
                 return;
             }
-            
-            // Populate order summary on checkout page
-            if (orderSummaryContainer) {
-                orderSummaryContainer.innerHTML = '';
-                let total = 0;
-                cart.forEach(item => {
-                    total += item.price * item.quantity;
-                    const itemEl = document.createElement('div');
-                    itemEl.className = 'flex justify-between items-center py-2 border-b';
-                    itemEl.innerHTML = `
-                        <div>
-                            <p class="font-semibold">${item.name} <span class="text-gray-500 font-normal">x ${item.quantity}</span></p>
-                        </div>
-                        <p class="font-semibold">$${(item.price * item.quantity).toFixed(2)}</p>
-                    `;
-                    orderSummaryContainer.appendChild(itemEl);
-                });
-                const totalEl = document.createElement('div');
-                totalEl.className = 'flex justify-between items-center pt-4 font-bold text-lg';
-                totalEl.innerHTML = `
-                    <p>Total</p>
-                    <p>$${total.toFixed(2)}</p>
-                `;
-                orderSummaryContainer.appendChild(totalEl);
-            }
-            
+            closeCart();
             showPage('checkoutPage');
         };
-
-        // --- Order Submission ---
+        
         async function handleOrderSubmit(event) {
             event.preventDefault();
-            if (!db || !userId) {
-                console.error("Database not initialized or user not authenticated.");
+            if (cart.length === 0) {
+                showModal("Cannot place order, your cart is empty.");
                 return;
             }
 
-            const customerForm = event.target;
-            const customerInfo = {
-                name: customerForm.name.value,
-                email: customerForm.email.value,
-                phone: customerForm.phone.value,
-                address: customerForm.address.value,
+            const formData = new FormData(checkoutForm); // checkoutForm is assigned in initialize
+            const customerDetails = {
+                name: formData.get('name'),
+                email: formData.get('email'),
+                phone: formData.get('phone'),
+                address: formData.get('address'),
             };
-
+            
             const orderTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-
+            
             const orderData = {
-                userId: userId,
+                customer: customerDetails,
                 items: cart,
                 total: orderTotal,
-                customerInfo: customerInfo,
                 status: "Pending",
-                createdAt: Timestamp.now()
+                createdAt: Timestamp.now(),
+                userId: userId
             };
-
+            
+            const submitButton = checkoutForm.querySelector('button[type="submit"]');
             try {
-                // Show loading state on button
-                const submitButton = customerForm.querySelector('button[type="submit"]');
                 submitButton.disabled = true;
                 submitButton.textContent = "Placing Order...";
-
-                // Save to user-specific private collection
+                
                 const ordersCollectionPath = `artifacts/${appId}/users/${userId}/orders`;
                 const docRef = await addDoc(collection(db, ordersCollectionPath), orderData);
                 
-                console.log("Order placed successfully with ID: ", docRef.id);
-                
-                // Reset cart
                 cart = [];
-                updateCartUI();
-                customerForm.reset();
+                updateCartView();
+                checkoutForm.reset();
                 
-                // Show success page
                 showPage('orderSuccessPage');
                 document.getElementById('newOrderId').textContent = docRef.id;
-
             } catch (error) {
                 console.error("Error placing order: ", error);
-                alert("There was an error placing your order. Please try again.");
+                showModal("There was an error placing your order. Please try again.");
             } finally {
-                // Reset button state
-                const submitButton = customerForm.querySelector('button[type="submit"]');
                 submitButton.disabled = false;
                 submitButton.textContent = "Place Order";
             }
         }
         
-        // Attach listener to form
-        const checkoutForm = document.getElementById('checkoutForm');
-        if (checkoutForm) {
-            checkoutForm.addEventListener('submit', handleOrderSubmit);
+        // This event listener attachment MUST be inside initialize()
+        // if (checkoutForm) {
+        //     checkoutForm.addEventListener('submit', handleOrderSubmit);
+        // }
+
+        // --- Gemini AI Consultation Logic ---
+        async function handleServiceConsultation(event) {
+            event.preventDefault();
+            if (!serviceConsultationInput || !serviceConsultationButton || !serviceConsultationSpinner || !serviceConsultationResult) return;
+
+            const userQueryText = serviceConsultationInput.value;
+            if (userQueryText.trim().length < 10) {
+                showModal("Please describe your project or problem in more detail.");
+                return;
+            }
+
+            serviceConsultationButton.disabled = true;
+            serviceConsultationSpinner.classList.remove('hidden');
+            serviceConsultationResult.innerHTML = '';
+
+            const systemPrompt = `You are a friendly and professional consultation assistant for 'Allwin I Power Systems'. 
+Your customer needs help with a power system-related problem or project. 
+Your goal is to:
+1.  Acknowledge their request.
+2.  Analyze their problem and match it to one of the company's core services.
+3.  Provide a brief, helpful 'Preliminary Analysis'.
+4.  List 'Key Factors' that might influence the project scope or cost (e.g., size of property, number of devices, existing infrastructure).
+5.  Encourage them to book a formal consultation (which is one of our services).
+Do NOT give specific prices or timelines. Keep the tone helpful and expert.
+Format the entire response as clean HTML. Use <h3> for titles and <ul>/<li> for lists.`;
+
+            const userPrompt = `
+Here is a list of our core services:
+- UPS Installation & Service
+- Stabilizer Repair
+- Electrical Wiring Consultation
+- Annual Maintenance Contract (AMC)
+
+Here is the customer's project description:
+"${userQueryText}"
+Please provide your analysis based on these services.`;
+
+            try {
+                const payload = {
+                    contents: [{ parts: [{ text: userPrompt }] }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] },
+                };
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
+                
+                const result = await response.json();
+                const candidate = result.candidates?.[0];
+                if (candidate && candidate.content?.parts?.[0]?.text) {
+                    serviceConsultationResult.innerHTML = candidate.content.parts[0].text;
+                } else {
+                    throw new Error("Invalid response structure from API.");
+                }
+            } catch (error) {
+                console.error("Error calling Gemini API: ", error);
+                serviceConsultationResult.innerHTML = `<p class="text-red-600">We're sorry, our AI assistant is currently unavailable. Please try again later.</p>`;
+            } finally {
+                serviceConsultationButton.disabled = false;
+                serviceConsultationSpinner.classList.add('hidden');
+            }
+        }
+
+        // --- Gemini Product Finder Logic ---
+        async function handleProductFinderSubmit(event) {
+            event.preventDefault();
+            if (!productFinderInput || !productFinderButton || !productFinderSpinner || !productFinderResult || !db) return;
+
+            const userQueryText = productFinderInput.value;
+            if (userQueryText.trim().length < 10) {
+                showModal("Please describe your requirements in more detail.");
+                return;
+            }
+
+            productFinderButton.disabled = true;
+            productFinderSpinner.classList.remove('hidden');
+            productFinderResult.innerHTML = '';
+
+            let productList = [];
+            let productCatalogString = "";
+            try {
+                const productsCollectionPath = `artifacts/${appId}/public/data/products`;
+                const productsQuery = query(collection(db, productsCollectionPath));
+                const snapshot = await getDocs(productsQuery);
+                
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    productList.push(`- Name: ${data.name}\n  Description: ${data.description}\n  Price: $${data.price}`);
+                });
+
+                if (productList.length === 0) {
+                    productFinderResult.innerHTML = `<p class="text-red-600">Could not retrieve the product list. Please try again.</p>`;
+                } else {
+                    productCatalogString = productList.join('\n');
+                }
+            } catch (err) {
+                console.error("Error fetching product list for AI: ", err);
+                productFinderResult.innerHTML = `<p class="text-red-600">An error occurred while fetching products. Please try again.</p>`;
+                productFinderButton.disabled = false;
+                productFinderSpinner.classList.add('hidden');
+                return;
+            }
+
+            const systemPrompt = `You are an expert product advisor for 'Allwin I Power Systems'. 
+Your goal is to help a customer find the perfect product for their needs from our catalog. 
+1.  Acknowledge their requirement.
+2.  Analyze their needs and compare them against the product catalog provided.
+3.  Recommend the top 1 or 2 products that are the best fit.
+4.  Briefly explain *why* each product is a good fit for their specific needs.
+5.  If no product is a good fit, politely explain why and suggest they contact us for a custom solution.
+Do NOT give specific prices. Keep the tone helpful and expert.
+Format the entire response as clean HTML. Use <h3> for titles and <ul>/<li> for lists and <p> for text.`;
+
+            const userPrompt = `
+Here is our product catalog:
+${productCatalogString}
+Here is the customer's requirement:
+"${userQueryText}"
+Please provide your recommendation based on this catalog.`;
+
+            try {
+                const payload = {
+                    contents: [{ parts: [{ text: userPrompt }] }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] },
+                };
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
+                
+                const result = await response.json();
+                const candidate = result.candidates?.[0];
+                if (candidate && candidate.content?.parts?.[0]?.text) {
+                    productFinderResult.innerHTML = candidate.content.parts[0].text;
+                } else {
+                    throw new Error("Invalid response structure from API.");
+                }
+            } catch (error) {
+                console.error("Error calling Gemini API: ", error);
+                productFinderResult.innerHTML = `<p class="text-red-600">We're sorry, our AI assistant is currently unavailable. Please try again later.</p>`;
+            } finally {
+                productFinderButton.disabled = false;
+                productFinderSpinner.classList.add('hidden');
+            }
         }
 
         // --- Data Fetching ---
         function fetchProductsAndServices() {
-            if (!db) return;
-
+            if (unsubscribeProducts) unsubscribeProducts();
+            if (unsubscribeServices) unsubscribeServices();
+            
             const productsCollectionPath = `artifacts/${appId}/public/data/products`;
-            const servicesCollectionPath = `artifacts/${appId}/public/data/services`;
-
-            // Listen for product changes
             const productsQuery = query(collection(db, productsCollectionPath));
             unsubscribeProducts = onSnapshot(productsQuery, (snapshot) => {
-                const products = [];
+                productGrid.innerHTML = ''; // Clear existing
                 snapshot.forEach((doc) => {
-                    products.push({ id: doc.id, ...doc.data() });
+                    const product = doc.data();
+                    const imageUrl = product.imageUrl || `https://placehold.co/600x400/3b82f6/ffffff?text=${encodeURIComponent(product.name)}`;
+                    productGrid.innerHTML += `
+                        <div class="bg-white rounded-lg shadow-lg overflow-hidden flex flex-col animation-fadeIn">
+                            <img src="${imageUrl}" alt="${product.name}" class="w-full h-56 object-cover" onerror="this.src='https://placehold.co/600x400/e2e8f0/94a3b8?text=Image+Not+Found'">
+                            <div class="p-6 flex flex-col flex-grow">
+                                <h3 class="text-xl font-bold mb-2">${product.name}</h3>
+                                <p class="text-gray-600 mb-4 flex-grow">${product.description}</p>
+                                <div class="flex justify-between items-center mt-auto">
+                                    <span class="text-2xl font-bold text-blue-600">$${product.price.toFixed(2)}</span>
+                                    <button onclick="addToCart('${doc.id}', '${product.name}', ${product.price}, 'product', '${imageUrl}')" class="bg-blue-600 text-white px-5 py-2 rounded-md font-semibold hover:bg-blue-700 transition-colors">
+                                        Add to Cart
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
                 });
-                renderItems(products, productGrid, 'product');
-            }, (error) => {
-                console.error("Error fetching products: ", error);
-            });
+            }, (error) => console.error("Error fetching products:", error));
 
-            // Listen for service changes
+            const servicesCollectionPath = `artifacts/${appId}/public/data/services`;
             const servicesQuery = query(collection(db, servicesCollectionPath));
             unsubscribeServices = onSnapshot(servicesQuery, (snapshot) => {
-                const services = [];
+                serviceGrid.innerHTML = ''; // Clear existing
                 snapshot.forEach((doc) => {
-                    services.push({ id: doc.id, ...doc.data() });
-                });
-                renderItems(services, serviceGrid, 'service');
-            }, (error) => {
-                console.error("Error fetching services: ", error);
-            });
-        }
-
-        function renderItems(items, gridElement, type) {
-            if (!gridElement) return;
-            gridElement.innerHTML = ''; // Clear existing items
-
-            if (items.length === 0) {
-                gridElement.innerHTML = `<p class="text-gray-500 col-span-full">No ${type}s found.</p>`;
-                return;
-            }
-
-            items.forEach(item => {
-                const itemCard = document.createElement('div');
-                itemCard.className = 'border rounded-lg shadow-lg overflow-hidden bg-white transition-transform duration-300 hover:shadow-xl hover:-translate-y-1';
-                
-                // Use a placeholder image if no imageUrl is provided
-                const imageUrl = item.imageUrl || `https://placehold.co/600x400/003366/FFFFFF?text=${encodeURIComponent(item.name)}`;
-                
-                itemCard.innerHTML = `
-                    <img src="${imageUrl}" alt="${item.name}" class="w-full h-48 object-cover" onerror="this.src='https://placehold.co/600x400/CCCCCC/FFFFFF?text=Image+Not+Found'">
-                    <div class="p-4">
-                        <h3 class="text-xl font-semibold text-gray-800 h-16">${item.name}</h3>
-                        <p class="text-gray-600 mt-2 h-24 overflow-hidden text-ellipsis">${item.description || 'No description available.'}</p>
-                        <div class="mt-4 flex justify-between items-center">
-                            <span class="text-2xl font-bold text-blue-700">$${parseFloat(item.price || 0).toFixed(2)}</span>
-                            <button class="bg-blue-600 text-white px-4 py-2 rounded-md font-semibold hover:bg-blue-700 transition-colors"
-                                    onclick="addToCart('${item.id}', '${item.name.replace(/'/g, "\\'")}', ${item.price || 0}, '${type}')">
-                                Add to Cart
-                            </button>
+                    const service = doc.data();
+                    const imageUrl = service.imageUrl || `https://placehold.co/600x400/10b981/ffffff?text=${encodeURIComponent(service.name)}`;
+                    serviceGrid.innerHTML += `
+                        <div class="bg-white rounded-lg shadow-lg overflow-hidden flex flex-col animation-fadeIn">
+                            <img src="${imageUrl}" alt="${service.name}" class="w-full h-56 object-cover" onerror="this.src='https://placehold.co/600x400/e2e8f0/94a3b8?text=Image+Not+Found'">
+                            <div class="p-6 flex flex-col flex-grow">
+                                <h3 class="text-xl font-bold mb-2">${service.name}</h3>
+                                <p class="text-gray-600 mb-4 flex-grow">${service.description}</p>
+                                <div class="flex justify-between items-center mt-auto">
+                                    <span class="text-2xl font-bold text-blue-600">$${service.price.toFixed(2)}</span>
+                                    <button onclick="addToCart('${doc.id}', '${service.name}', ${service.price}, 'service', '${imageUrl}')" class="bg-blue-600 text-white px-5 py-2 rounded-md font-semibold hover:bg-blue-700 transition-colors">
+                                        Add to Cart
+                                    </button>
+                                </div>
+                            </div>
                         </div>
-                    </div>
-                `;
-                gridElement.appendChild(itemCard);
-            });
-        }
-        
-        // --- Data Pre-population ---
-        async function prepopulateData() {
-            if (!db) return;
-            
-            const productsCollectionPath = `artifacts/${appId}/public/data/products`;
-            const productsCollectionRef = collection(db, productsCollectionPath);
-            
-            // Check if products already exist
-            const q = query(productsCollectionRef, limit(1));
-            const snapshot = await getDocs(q);
-            
-            if (snapshot.empty) {
-                console.log("No products found. Pre-populating data...");
-                const batch = writeBatch(db);
-                
-                const sampleProducts = [
-                    { name: "1KVA Online UPS", description: "High-performance online UPS for critical applications. Pure sine wave output.", price: 150.00, category: "Online UPS", imageUrl: "https://placehold.co/600x400/003366/FFFFFF?text=Online+UPS" },
-                    { name: "5KVA Servo Stabilizer", description: "Reliable servo stabilizer for voltage correction. Protects sensitive equipment.", price: 250.00, category: "Servo Stabilizers", imageUrl: "https://placehold.co/600x400/003366/FFFFFF?text=Servo+Stabilizer" },
-                    { name: "150Ah Tubular Battery", description: "Long-lasting tubular battery for inverter systems. Low maintenance.", price: 180.00, category: "Battery", imageUrl: "https://placehold.co/600x400/003366/FFFFFF?text=Inverter+Battery" },
-                    { name: "Industrial Control Panel", description: "Custom-built control panel for industrial automation and machinery.", price: 1200.00, category: "Control Panel", imageUrl: "https://placehold.co/600x400/003366/FFFFFF?text=Control+Panel" },
-                    { name: "10A Battery Charger", description: "Smart battery charger with multiple charging modes.", price: 50.00, category: "Battery Charger", imageUrl: "https://placehold.co/600x400/003366/FFFFFF?text=Battery+Charger" },
-                    { name: "800VA Inverter", description: "Efficient square wave inverter for home use.", price: 90.00, category: "Inverter", imageUrl: "https://placehold.co/600x400/003366/FFFFFF?text=Inverter" }
-                ];
-                
-                sampleProducts.forEach(product => {
-                    const docRef = doc(productsCollectionRef); // Auto-generates ID
-                    batch.set(docRef, product);
+                    `;
                 });
-                
-                const servicesCollectionPath = `artifacts/${appId}/public/data/services`;
-                const servicesCollectionRef = collection(db, servicesCollectionPath);
-                
-                const sampleServices = [
-                    { name: "UPS Installation & Service", description: "Professional installation and repair services for all brands of UPS.", price: 75.00, category: "Service" },
-                    { name: "Stabilizer Repair", description: "Expert repair for servo and static stabilizers.", price: 60.00, category: "Service" },
-                    { name: "Electrical Wiring Consultation", description: "Consulting services for industrial and commercial wiring projects.", price: 100.00, category: "Consulting" },
-                    { name: "Annual Maintenance Contract (AMC)", description: "Comprehensive AMC for UPS and stabilizers to ensure zero downtime.", price: 300.00, category: "Service" }
-                ];
-                
-                sampleServices.forEach(service => {
-                    const docRef = doc(servicesCollectionRef); // Auto-generates ID
-                    batch.set(docRef, service);
-                });
-
-                await batch.commit();
-                console.log("Sample data pre-populated.");
-            } else {
-                console.log("Data already exists. Skipping pre-population.");
-            }
+            }, (error) => console.error("Error fetching services:", error));
         }
 
         // --- Initialization ---
         async function initialize() {
-            if (!firebaseConfig.apiKey) {
-                console.error("Firebase config is missing!");
-                document.getElementById('loadingMessage').textContent = "Error: Firebase configuration is missing. App cannot load.";
+            // --- Assign UI Elements NOW that the DOM is loaded ---
+            loadingIndicator = document.getElementById('loadingIndicator');
+            appContent = document.getElementById('appContent');
+            mainContent = document.getElementById('mainContent');
+            cartPanel = document.getElementById('cartPanel');
+            cartCount = document.getElementById('cartCount');
+            cartItemsContainer = document.getElementById('cartItemsContainer');
+            cartTotal = document.getElementById('cartTotal');
+            productGrid = document.getElementById('productGrid');
+            serviceGrid = document.getElementById('serviceGrid');
+            userIdDisplay = document.getElementById('userIdDisplay');
+            orderSummaryContainer = document.getElementById('orderSummaryContainer');
+            checkoutForm = document.getElementById('checkoutForm');
+            appModal = document.getElementById('appModal');
+            appModalMessage = document.getElementById('appModalMessage');
+            serviceConsultationForm = document.getElementById('serviceConsultationForm');
+            serviceConsultationInput = document.getElementById('serviceConsultationInput');
+            serviceConsultationButton = document.getElementById('serviceConsultationButton');
+            serviceConsultationSpinner = document.getElementById('serviceConsultationSpinner');
+            serviceConsultationResult = document.getElementById('serviceConsultationResult');
+            productFinderModal = document.getElementById('productFinderModal');
+            productFinderForm = document.getElementById('productFinderForm');
+            productFinderInput = document.getElementById('productFinderInput');
+            productFinderButton = document.getElementById('productFinderButton');
+            productFinderSpinner = document.getElementById('productFinderSpinner');
+            productFinderResult = document.getElementById('productFinderResult');
+            // --------------------------------------------------
+
+            if (!firebaseConfig.apiKey || firebaseConfig.apiKey.startsWith("REPLACE_ME")) {
+                document.getElementById('loadingMessage').textContent = "Error: Firebase configuration is missing. Please add your Firebase project keys to the firebaseConfig object in index.html (around line 40).";
                 return;
             }
 
             try {
-                // Initialize Firebase
                 app = initializeApp(firebaseConfig);
+                const analytics = getAnalytics(app); // Initialize Analytics
                 db = getFirestore(app);
                 auth = getAuth(app);
+
+                // Attach AI Consultation form listener
+                if (serviceConsultationForm) {
+                    serviceConsultationForm.addEventListener('submit', handleServiceConsultation);
+                }
+
+                // Attach AI Product Finder form listener
+                if (productFinderForm) {
+                    productFinderForm.addEventListener('submit', handleProductFinderSubmit);
+                }
+
+                // Attach Checkout form listener
+                if (checkoutForm) {
+                    checkoutForm.addEventListener('submit', handleOrderSubmit);
+                }
 
                 // Set up authentication
                 onAuthStateChanged(auth, async (user) => {
                     if (user) {
                         userId = user.uid;
-                        console.log("User authenticated. User ID:", userId);
+                        console.log("User authenticated:", userId);
                         userIdDisplay.textContent = `Session ID: ${userId}`;
                         
-                        // Once authenticated, pre-populate data if needed, then fetch
-                        await prepopulateData();
+                        // Fetch data now that we are authenticated
                         fetchProductsAndServices();
                         
-                        // Hide loading and show app
+                        // Hide loading screen, show app
                         loadingIndicator.classList.add('hidden');
                         appContent.classList.remove('hidden');
                         showPage('homePage');
+
                     } else {
                         // No user, sign in
-                        console.log("No user found, attempting sign in...");
-                        if (initialAuthToken) {
-                            await signInWithCustomToken(auth, initialAuthToken);
-                        } else {
-                            await signInAnonymously(auth);
+                        console.log("No user found, signing in...");
+                        try {
+                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                                console.log("Signing in with custom token...");
+                                await signInWithCustomToken(auth, __initial_auth_token);
+                            } else {
+                                console.log("Signing in anonymously...");
+                                await signInAnonymously(auth);
+                            }
+                        } catch (authError) {
+                            console.error("Authentication error: ", authError);
+                            document.getElementById('loadingMessage').textContent = "Error: Could not authenticate. Please refresh.";
                         }
                     }
                 });
 
             } catch (error) {
-                console.error("Error initializing Firebase: ", error);
-                document.getElementById('loadingMessage').textContent = "Error initializing application. Please check console.";
+                console.error("Initialization Error: ", error);
+                document.getElementById('loadingMessage').textContent = "Error: App failed to initialize.";
             }
         }
 
@@ -398,8 +580,9 @@
         document.addEventListener('DOMContentLoaded', initialize);
 
     </script>
+    
     <style>
-        /* Simple transition for page content */
+        /* Simple Page Fade-in */
         .page {
             animation: fadeIn 0.5s ease-in-out;
         }
@@ -407,14 +590,15 @@
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
+        
         /* Ensure html and body take full height */
         html, body {
             height: 100%;
-            font-family: 'Inter', sans-serif;
         }
+        
         /* Custom scrollbar for cart */
         #cartItemsContainer::-webkit-scrollbar {
-            width: 6px;
+            width: 8px;
         }
         #cartItemsContainer::-webkit-scrollbar-track {
             background: #f1f1f1;
@@ -426,6 +610,31 @@
         }
         #cartItemsContainer::-webkit-scrollbar-thumb:hover {
             background: #888;
+        }
+        
+        /* Styles for new modal */
+        .modal-backdrop {
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+
+        /* Simple spinner */
+        .spinner {
+            border-top-color: transparent;
+            border-right-color: transparent;
+        }
+        
+        /* Tailwind prose styles for AI output */
+        .prose h3 {
+            @apply text-lg font-semibold mb-2;
+        }
+        .prose p {
+            @apply mb-4;
+        }
+        .prose ul {
+            @apply list-disc list-inside mb-4 pl-4;
+        }
+        .prose li {
+            @apply mb-1;
         }
     </style>
 </head>
@@ -537,7 +746,18 @@
             <!-- Products Page -->
             <section id="productsPage" class="page hidden py-16">
                 <div class="container mx-auto px-4 sm:px-6 lg:px-8">
-                    <h2 class="text-3xl font-bold text-center text-gray-800 mb-12">Our Products</h2>
+                    <h2 class="text-3xl font-bold text-center text-gray-800 mb-6">Our Products</h2>
+                    
+                    <!-- Product Finder Button -->
+                    <div class="text-center mb-12">
+                        <button onclick="openProductFinder()" class="inline-flex items-center justify-center bg-green-600 text-white px-8 py-3 rounded-md font-semibold text-lg hover:bg-green-700 transition-colors">
+                            <svg class="h-6 w-6 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M12 21v-1m0-18c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9z" />
+                            </svg>
+                            ✨ Help Me Choose Product
+                        </button>
+                    </div>
+
                     <div id="productGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                         <!-- Product cards will be injected here by JS -->
                     </div>
@@ -548,6 +768,31 @@
             <section id="servicesPage" class="page hidden py-16">
                 <div class="container mx-auto px-4 sm:px-6 lg:px-8">
                     <h2 class="text-3xl font-bold text-center text-gray-800 mb-12">Our Services</h2>
+                    
+                    <!-- Gemini AI Consultation Section -->
+                    <section class="mb-16 bg-white rounded-lg shadow-lg p-8 max-w-3xl mx-auto">
+                        <h3 class="text-2xl font-bold text-gray-800 text-center mb-2">✨ AI-Powered Consultation</h3>
+                        <p class="text-center text-gray-600 mb-6">Not sure what you need? Describe your problem or project, and our AI assistant will suggest the right service for you.</p>
+                        <form id="serviceConsultationForm">
+                            <div>
+                                <label for="serviceConsultationInput" class="sr-only">Describe your project:</label>
+                                <textarea id="serviceConsultationInput" rows="4" class="w-full p-3 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g., 'I need to install 3 new UPS units in my office.' or 'My servo stabilizer is making a strange noise.'"></textarea>
+                            </div>
+                            <div class="mt-4 text-center">
+                                <button id="serviceConsultationButton" type="submit" class="inline-flex items-center justify-center bg-blue-600 text-white px-8 py-3 rounded-md font-semibold text-lg hover:bg-blue-700 transition-colors disabled:bg-gray-400">
+                                    <svg id="serviceConsultationSpinner" class="spinner animate-spin -ml-1 mr-3 h-5 w-5 text-white hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    <span>Get AI Analysis</span>
+                                </button>
+                            </div>
+                        </form>
+                        <div id="serviceConsultationResult" class="mt-6 prose prose-blue max-w-none">
+                            <!-- AI response will be injected here -->
+                        </div>
+                    </section>
+                    
                     <div id="serviceGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                         <!-- Service cards will be injected here by JS -->
                     </div>
@@ -658,7 +903,7 @@
             </div>
             
             <!-- Cart Footer -->
-            <div class="p-6 border-t bg-gray-50">
+            <div classs="p-6 border-t bg-gray-50">
                 <div class="flex justify-between items-center mb-4">
                     <span class="text-lg font-semibold text-gray-700">Subtotal:</span>
                     <span id="cartTotal" class="text-2xl font-bold text-gray-900">$0.00</span>
@@ -670,5 +915,75 @@
         </div>
     </div>
 
+    <!-- Generic Modal (for alerts) -->
+    <div id="appModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+        <!-- Backdrop -->
+        <div class="modal-backdrop fixed inset-0 bg-black opacity-50" onclick="closeModal()"></div>
+        
+        <!-- Modal Content -->
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md z-10 p-6 relative">
+            <button onclick="closeModal()" class="absolute top-3 right-3 p-1 rounded-full text-gray-500 hover:bg-gray-200">
+                <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+            <h3 class="text-xl font-semibold mb-4">Notification</h3>
+            <p id="appModalMessage" class="text-gray-700">This is a modal message.</p>
+            <div class="mt-6 text-right">
+                <button onclick="closeModal()" class="bg-blue-600 text-white px-5 py-2 rounded-md font-semibold hover:bg-blue-700 transition-colors">
+                    OK
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Product Finder Modal -->
+    <div id="productFinderModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+        <!-- Backdrop -->
+        <div class="modal-backdrop fixed inset-0 bg-black opacity-50" onclick="closeProductFinder()"></div>
+        
+        <!-- Modal Content -->
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl z-10 relative max-h-[90vh] flex flex-col">
+            <!-- Header -->
+            <div class="flex justify-between items-center p-5 border-b">
+                <h3 class="text-xl font-semibold">✨ AI Product Advisor</h3>
+                <button onclick="closeProductFinder()" class="p-1 rounded-full text-gray-500 hover:bg-gray-200">
+                    <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- Content -->
+            <div class="p-6 space-y-4 overflow-y-auto">
+                <form id="productFinderForm">
+                    <div>
+                        <label for="productFinderInput" class="block text-sm font-medium text-gray-700 mb-2">Describe your requirements:</label>
+                        <textarea id="productFinderInput" rows="4" class="w-full p-3 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g., 'I need a UPS for my gaming PC and monitor.' or 'What stabilizer do I need for a 2-ton air conditioner?'"></textarea>
+                    </div>
+                    <div class="mt-4 text-center">
+                        <button id="productFinderButton" type="submit" class="inline-flex items-center justify-center bg-green-600 text-white px-8 py-3 rounded-md font-semibold text-lg hover:bg-green-700 transition-colors disabled:bg-gray-400">
+                            <svg id="productFinderSpinner" class="spinner animate-spin -ml-1 mr-3 h-5 w-5 text-white hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span>Find My Product</span>
+                        </button>
+                    </div>
+                </form>
+                
+                <!-- Result Area -->
+                <div class="border-t pt-4 mt-4">
+                    <h4 class="text-lg font-semibold mb-2">Our Recommendation:</h4>
+                    <div id="productFinderResult" class="prose prose-blue max-w-none">
+                        <p class="text-gray-500">Please describe your needs above, and our AI will provide a recommendation here.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>
+
+
